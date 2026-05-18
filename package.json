@@ -1,0 +1,27 @@
+{
+  "name": "watch_party_backend",
+  "version": "1.0.0",
+  "description": "This repo serves as the backend for the project watch party.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/bhanushaliparthhitesh/Watch_party_backend.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/bhanushaliparthhitesh/Watch_party_backend/issues"
+  },
+  "homepage": "https://github.com/bhanushaliparthhitesh/Watch_party_backend#readme",
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "fastify": "^5.8.5",
+    "socket.io": "^4.8.3"
+  }
+}
