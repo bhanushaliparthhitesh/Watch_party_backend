@@ -1,0 +1,16 @@
+{
+  "name": "watch-party-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Watch party sync server",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@fastify/cors": "^11.2.0",
+    "fastify": "^5.8.5",
+    "socket.io": "^4.8.3"
+  }
+}
