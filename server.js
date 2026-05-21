@@ -1,7 +1,6 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { Server } from 'socket.io';
-import { createServer } from 'http';
 import { getRoom, addUser, getUsers, updateRoomState, removeUser } from './rooms.js';
 
 // Create Fastify app
@@ -10,11 +9,8 @@ const app = Fastify({ logger: true });
 // Register CORS (allows requests from Vercel)
 await app.register(cors, { origin: '*' });
 
-// Create HTTP server
-const httpServer = createServer(app.server);
-
-// Create Socket.io instance
-const io = new Server(httpServer, {
+// Create Socket.io instance using Fastify's underlying server
+const io = new Server(app.server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST']
@@ -52,8 +48,8 @@ io.on('connection', (socket) => {
     // 4. Send state to THIS user only
     socket.emit('room-state', room)
 
-    // 5. Notify others
-    socket.to(roomCode).emit('user-joined', { 
+    // 5. Notify everyone
+    io.to(roomCode).emit('user-joined', { 
       username, 
       users: getUsers(roomCode) 
     })
@@ -141,9 +137,9 @@ io.on('connection', (socket) => {
 
 // Start server
 const PORT = process.env.PORT || 3001;
-httpServer.listen({ port: PORT, host: '0.0.0.0' }, (err) => {
+app.listen({ port: PORT, host: '0.0.0.0' }, (err) => {
   if (err) {
-    console.error(err);
+    app.log.error(err);
     process.exit(1);
   }
   console.log(`Server running on port ${PORT}`);
