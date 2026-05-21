@@ -1,162 +1,150 @@
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import { Server } from 'socket.io';
-import { addUser, getRoom, removeUser, updateRoomState } from './rooms.js';
+import { createServer } from 'http';
+import { getRoom, addUser, getUsers, updateRoomState, removeUser } from './rooms.js';
 
-const fastify = Fastify({ logger: true });
+// Create Fastify app
+const app = Fastify({ logger: true });
 
-await fastify.register(cors, {
-  origin: '*'
-});
+// Register CORS (allows requests from Vercel)
+await app.register(cors, { origin: '*' });
 
-fastify.get('/health', async (request, reply) => {
-  return { status: 'ok', timestamp: Date.now() };
-});
+// Create HTTP server
+const httpServer = createServer(app.server);
 
-fastify.get('/rooms/:code', async (request, reply) => {
-  const room = getRoom(request.params.code);
-  if (!room) {
-    return reply.code(404).send({ error: 'Room not found' });
-  }
-  return room;
-});
-
-// Attach Socket.io to the Fastify HTTP server
-const io = new Server(fastify.server, {
+// Create Socket.io instance
+const io = new Server(httpServer, {
   cors: {
-    origin: '*'
+    origin: '*',
+    methods: ['GET', 'POST']
   }
 });
 
-// Wraps a socket handler in try-catch so a single bad event never crashes the server
-const safeHandler = (handler) => (data) => {
-  try {
-    handler(data);
-  } catch (err) {
-    console.error(`Socket handler error: ${err.message || err}`);
+// Health check (used by Railway to verify server is alive)
+app.get('/health', async (request, reply) => {
+  return { status: 'ok', timestamp: Date.now() }
+});
+
+// Get room state (optional, for debugging)
+app.get('/rooms/:code', async (request, reply) => {
+  const room = getRoom(request.params.code)
+  if (!room) {
+    return reply.code(404).send({ error: 'Room not found' })
   }
-};
+  return room
+});
 
+// Socket.io event handling
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log('User connected:', socket.id);
 
-  socket.on('join-room', safeHandler(({ roomCode, username }) => {
-    if (!roomCode || !username) return;
+  socket.on('join-room', ({ roomCode, username }) => {
+    // 1. Join the Socket.io room
+    socket.join(roomCode)
 
-    socket.join(roomCode);
-    const room = addUser(roomCode, { id: socket.id, username });
+    // 2. Add user to room state
+    addUser(roomCode, { id: socket.id, username })
 
-    socket.emit('room-state', room);
-    socket.to(roomCode).emit('user-joined', { username, users: room.users });
+    // 3. Get current room state
+    const room = getRoom(roomCode)
 
-    console.log(`${username} joined room ${roomCode}`);
-  }));
+    // 4. Send state to THIS user only
+    socket.emit('room-state', room)
 
-  socket.on('play', safeHandler(({ roomCode, time }) => {
-    if (!roomCode || time == null) return;
-    const room = getRoom(roomCode);
-    if (!room) return;
+    // 5. Notify others
+    socket.to(roomCode).emit('user-joined', { 
+      username, 
+      users: getUsers(roomCode) 
+    })
+    
+    console.log(`${username} joined room ${roomCode}`)
+  })
 
-    updateRoomState(roomCode, { playing: true, time });
-    socket.to(roomCode).emit('play', { time });
-  }));
+  socket.on('play', ({ roomCode, time }) => {
+    updateRoomState(roomCode, { playing: true, time })
+    socket.to(roomCode).emit('play', { time })
+  })
 
-  socket.on('pause', safeHandler(({ roomCode, time }) => {
-    if (!roomCode || time == null) return;
-    const room = getRoom(roomCode);
-    if (!room) return;
+  socket.on('pause', ({ roomCode, time }) => {
+    updateRoomState(roomCode, { playing: false, time })
+    socket.to(roomCode).emit('pause', { time })
+  })
 
-    updateRoomState(roomCode, { playing: false, time });
-    socket.to(roomCode).emit('pause', { time });
-  }));
+  socket.on('seek', ({ roomCode, time }) => {
+    updateRoomState(roomCode, { time })
+    socket.to(roomCode).emit('seek', { time })
+  })
 
-  socket.on('seek', safeHandler(({ roomCode, time }) => {
-    if (!roomCode || time == null) return;
-    const room = getRoom(roomCode);
-    if (!room) return;
+  socket.on('sync-check', ({ roomCode, time }) => {
+    const room = getRoom(roomCode)
+    if (!room) return
 
-    updateRoomState(roomCode, { time });
-    socket.to(roomCode).emit('seek', { time });
-  }));
+    // Calculate what time should be
+    const elapsed = (Date.now() - room.updatedAt) / 1000
+    const expectedTime = room.time + (room.playing ? elapsed : 0)
+    const drift = Math.abs(time - expectedTime)
 
-  socket.on('sync-check', safeHandler(({ roomCode, time: userTime }) => {
-    if (!roomCode || userTime == null) return;
-    const room = getRoom(roomCode);
-    if (!room) return;
-
-    const elapsed = (Date.now() - room.updatedAt) / 1000;
-    const expectedTime = room.time + (room.playing ? elapsed : 0);
-    const drift = Math.abs(userTime - expectedTime);
-
+    // If drifted more than 0.5 seconds, send correction
     if (drift > 0.5) {
-      socket.emit('sync-correction', { time: expectedTime, playing: room.playing });
+      socket.emit('sync-correction', { time: expectedTime })
     }
-  }));
+  })
 
-  socket.on('video-source', safeHandler(({ roomCode, url }) => {
-    if (!roomCode || !url) return;
-    const room = getRoom(roomCode);
-    if (!room) return;
+  socket.on('video-source', ({ roomCode, url }) => {
+    // Update room state: new video, reset time to 0, not playing
+    updateRoomState(roomCode, { url, time: 0, playing: false })
 
-    updateRoomState(roomCode, { url, time: 0, playing: false });
-    socket.to(roomCode).emit('video-source', { url });
-  }));
+    // Tell everyone in room (including sender for confirmation)
+    io.to(roomCode).emit('video-source', { url })
+  })
 
-  socket.on('chat-message', safeHandler(({ roomCode, username, text, timestamp }) => {
-    if (!roomCode || !username) return;
-    if (!text || typeof text !== 'string' || text.trim().length === 0 || text.length > 500) return;
+  socket.on('chat-message', ({ roomCode, username, text, timestamp }) => {
+    // Get current video time for context
+    const room = getRoom(roomCode)
+    const videoTime = room ? room.time : 0
 
-    const room = getRoom(roomCode);
-    socket.to(roomCode).emit('chat-message', {
+    // Broadcast to everyone in room
+    io.to(roomCode).emit('chat-message', {
       username,
-      text: text.trim(),
+      text,
       timestamp,
-      videoTime: room ? room.time : 0
-    });
-  }));
+      videoTime
+    })
+  })
 
-  socket.on('reaction', safeHandler(({ roomCode, emoji }) => {
-    if (!roomCode || !emoji) return;
-    socket.to(roomCode).emit('reaction', { emoji });
-  }));
+  socket.on('reaction', ({ roomCode, emoji }) => {
+    // Broadcast to everyone in room
+    socket.to(roomCode).emit('reaction', { emoji })
+  })
 
   socket.on('disconnecting', () => {
-    try {
-      for (const roomCode of socket.rooms) {
-        if (roomCode === socket.id) continue; // skip the default room
-
-        const room = getRoom(roomCode);
-        const user = room?.users.find((u) => u.id === socket.id);
-        const username = user?.username || 'Unknown';
-
-        const updatedRoom = removeUser(roomCode, socket.id);
-
-        socket.to(roomCode).emit('user-left', {
-          username,
-          users: updatedRoom ? updatedRoom.users : []
-        });
-
-        console.log(`${username} left room ${roomCode}`);
+    // Check all rooms this socket was in
+    for (const roomCode of socket.rooms) {
+      // Get user info
+      const room = getRoom(roomCode)
+      if (room) {
+        const user = room.users.find(u => u.id === socket.id)
+        if (user) {
+          // Remove from room
+          removeUser(roomCode, socket.id)
+          // Tell others
+          socket.to(roomCode).emit('user-left', { 
+            username: user.username, 
+            users: getUsers(roomCode) 
+          })
+        }
       }
-    } catch (err) {
-      console.error(`Disconnecting handler error: ${err.message || err}`);
     }
-  });
-
-  socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
-  });
+  })
 });
 
-const start = async () => {
-  try {
-    const port = process.env.PORT || 3001;
-    await fastify.listen({ port, host: '0.0.0.0' });
-    console.log(`Server running on port ${port}`);
-  } catch (err) {
-    console.error(`Server error: ${err.message || err}`);
+// Start server
+const PORT = process.env.PORT || 3001;
+httpServer.listen({ port: PORT, host: '0.0.0.0' }, (err) => {
+  if (err) {
+    console.error(err);
     process.exit(1);
   }
-};
-
-start();
+  console.log(`Server running on port ${PORT}`);
+});
