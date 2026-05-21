@@ -96,17 +96,25 @@ io.on('connection', (socket) => {
   })
 
   socket.on('chat-message', ({ roomCode, username, text, timestamp }) => {
+    console.log('Backend received chat:', { roomCode, username, text, timestamp })
     // Get current video time for context
     const room = getRoom(roomCode)
     const videoTime = room ? room.time : 0
 
-    // Broadcast to everyone in room
-    io.to(roomCode).emit('chat-message', {
+    const payload = {
       username,
       text,
       timestamp,
       videoTime
-    })
+    }
+    
+    console.log('Sending to room:', payload)
+    // Broadcast to everyone in room
+    io.to(roomCode).emit('chat-message', payload)
+  })
+
+  socket.on('typing', ({ roomCode, username }) => {
+    socket.to(roomCode).emit('typing', { username })
   })
 
   socket.on('reaction', ({ roomCode, emoji }) => {
